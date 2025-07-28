@@ -1,106 +1,100 @@
-import express from 'express';
-import { Telegraf, Markup } from 'telegraf';
-import fetch from 'node-fetch';
-import dotenv from 'dotenv';
-
-dotenv.config();
+const express = require("express");
+const bodyParser = require("body-parser");
+const fs = require("fs");
+const axios = require("axios");
+const TelegramBot = require("node-telegram-bot-api");
+require("dotenv").config();
 
 const app = express();
-const port = process.env.PORT || 3000;  // پورت داینامیک برای Render
+app.use(bodyParser.json());
 
-// میانه‌افزار برای خواندن json
-app.use(express.json());
+const bot = new TelegramBot(process.env.BOT_TOKEN);
+const dbFile = "db.json";
 
-// راه‌اندازی ربات تلگرام
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// ایجاد فایل اگر وجود ندارد
+if (!fs.existsSync(dbFile)) fs.writeFileSync(dbFile, "{}");
 
-// ذخیره موقت وضعیت کاربران در حافظه (برای هر chat_id)
-const sessions = {};
-
-// لیست کارشناسان
-const experts = ['علی رضایی', 'علی فیروز'];
-
-// مسیر webhook برای دریافت پیام‌ها از تلگرام
-app.use(bot.webhookCallback('/webhook'));
-
-// ست کردن webhook به صورت خودکار (می‌تونید بعداً دستی بزنید)
-async function setWebhook() {
-  const url = process.env.WEBHOOK_URL; // مثلا https://yourapp.onrender.com/webhook
-  if (!url) {
-    console.log('WEBHOOK_URL در .env تنظیم نشده');
-    return;
-  }
-  try {
-    await bot.telegram.setWebhook(url);
-    console.log('Webhook ست شد:', url);
-  } catch (e) {
-    console.error('خطا در ست کردن webhook:', e);
-  }
+function readDB() {
+    return JSON.parse(fs.readFileSync(dbFile, "utf8"));
 }
 
-// شروع مکالمه
-bot.start((ctx) => {
-  ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
-  sessions[ctx.chat.id] = { step: 'waiting_customer' };
+function writeDB(data) {
+    fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
+}
+
+// دریافت پیام از کاربر
+bot.on("message", async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text?.trim();
+    const db = readDB();
+
+    if (!db[chatId]) {
+        // درخواست شماره مشتری
+        db[chatId] = { step: "get_customer" };
+        writeDB(db);
+        return bot.sendMessage(chatId, "لطفاً شماره مشتری را وارد کنید:");
+    }
+
+    const user = db[chatId];
+
+    if (user.step === "get_customer") {
+        if (!/^\d{4,15}$/.test(text)) return bot.sendMessage(chatId, "شماره مشتری نامعتبر است. لطفاً دوباره وارد کنید:");
+        user.customer = text;
+        user.step = "choose_expert";
+        writeDB(db);
+
+        return bot.sendMessage(chatId, "کارشناس مورد نظر را انتخاب کنید:", {
+            reply_markup: {
+                keyboard: [["علی رضایی"], ["علی فیروز"]],
+                one_time_keyboard: true,
+                resize_keyboard: true
+            }
+        });
+    }
+
+    if (user.step === "choose_expert") {
+        const expert = text;
+        if (!["علی رضایی", "علی فیروز"].includes(expert)) {
+            return bot.sendMessage(chatId, "لطفاً یکی از گزینه‌های بالا را انتخاب کنید.");
+        }
+
+        user.expert = expert;
+        user.step = "done";
+        writeDB(db);
+
+        // ارسال به گرویتی فرم
+        try {
+            const response = await axios.post(
+                "https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions",
+                {
+                    "5": user.customer, // فیلد شماره مشتری
+                    "6": user.expert    // فیلد نام کارشناس
+                },
+                {
+                    auth: {
+                        username: process.env.WP_USER,
+                        password: process.env.WP_PASS
+                    }
+                }
+            );
+
+            await bot.sendMessage(chatId, "✅ اطلاعات با موفقیت ارسال شد.");
+        } catch (err) {
+            console.error("خطا در ارسال:", err.response?.data || err.message);
+            await bot.sendMessage(chatId, "❌ خطا در ارسال اطلاعات.");
+        }
+    } else {
+        bot.sendMessage(chatId, "برای ارسال اطلاعات جدید، /start را بزنید.");
+    }
 });
 
-// دریافت پیام‌های کاربر
-bot.on('text', async (ctx) => {
-  const chatId = ctx.chat.id;
-  const text = ctx.message.text.trim();
-
-  if (!sessions[chatId]) {
-    sessions[chatId] = { step: 'waiting_customer' };
-    return ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
-  }
-
-  const session = sessions[chatId];
-
-  if (session.step === 'waiting_customer') {
-    if (!text) {
-      return ctx.reply('شماره مشتری نمی‌تواند خالی باشد. لطفاً وارد کنید:');
-    }
-    session.customer = text;
-    session.step = 'waiting_expert';
-
-    return ctx.reply('لطفاً کارشناس را انتخاب کنید:', Markup.keyboard(
-      experts.map(e => [e])
-    ).oneTime().resize());
-  }
-
-  if (session.step === 'waiting_expert') {
-    if (!experts.includes(text)) {
-      return ctx.reply('لطفاً یکی از گزینه‌های زیر را انتخاب کنید:', Markup.keyboard(
-        experts.map(e => [e])
-      ).oneTime().resize());
-    }
-    session.expert = text;
-
-    // ارسال داده‌ها به سایت
-    try {
-      const response = await fetch(process.env.SITE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          customer: session.customer,
-          expert: session.expert
-        })
-      });
-
-      if (!response.ok) throw new Error('خطا در ارسال اطلاعات به سایت');
-
-      await ctx.reply('اطلاعات با موفقیت ارسال شد ✅');
-    } catch (error) {
-      console.error(error);
-      await ctx.reply('❌ خطا در ارسال اطلاعات به سایت.');
-    }
-
-    delete sessions[chatId];
-  }
+// راه‌اندازی وبهوک
+app.post("/webhook", (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
 });
 
-// شروع سرور و بات
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  setWebhook();
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Bot server is running on port ${PORT}`);
 });
