@@ -8,10 +8,12 @@ require("dotenv").config();
 const app = express();
 app.use(bodyParser.json());
 
-const bot = new TelegramBot(process.env.BOT_TOKEN);
+// مقداردهی به بات تلگرام در حالت بدون polling چون وبهوک استفاده می‌کنیم
+const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: false });
+
 const dbFile = "db.json";
 
-// ایجاد فایل اگر وجود ندارد
+// ساخت فایل db.json اگر وجود نداشت
 if (!fs.existsSync(dbFile)) fs.writeFileSync(dbFile, "{}");
 
 function readDB() {
@@ -22,79 +24,77 @@ function writeDB(data) {
     fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
 }
 
-// دریافت پیام از کاربر
+// مدیریت پیام‌های دریافتی
 bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
-    const text = msg.text?.trim();
+    const text = (msg.text || "").trim();
     const db = readDB();
 
     if (!db[chatId]) {
-        // درخواست شماره مشتری
-        db[chatId] = { step: "get_customer" };
+        db[chatId] = { step: "awaiting_customer" };
         writeDB(db);
         return bot.sendMessage(chatId, "لطفاً شماره مشتری را وارد کنید:");
     }
 
     const user = db[chatId];
 
-    if (user.step === "get_customer") {
-        if (!/^\d{4,15}$/.test(text)) return bot.sendMessage(chatId, "شماره مشتری نامعتبر است. لطفاً دوباره وارد کنید:");
+    if (user.step === "awaiting_customer") {
+        if (!/^\d{4,15}$/.test(text)) {
+            return bot.sendMessage(chatId, "شماره مشتری معتبر نیست. لطفاً دوباره وارد کنید:");
+        }
         user.customer = text;
-        user.step = "choose_expert";
+        user.step = "waiting_for_expert";
         writeDB(db);
 
-        return bot.sendMessage(chatId, "کارشناس مورد نظر را انتخاب کنید:", {
+        return bot.sendMessage(chatId, "لطفاً کارشناس را انتخاب کنید:", {
             reply_markup: {
                 keyboard: [["علی رضایی"], ["علی فیروز"]],
                 one_time_keyboard: true,
-                resize_keyboard: true
-            }
+                resize_keyboard: true,
+            },
         });
     }
 
-    if (user.step === "choose_expert") {
-        const expert = text;
-        if (!["علی رضایی", "علی فیروز"].includes(expert)) {
-            return bot.sendMessage(chatId, "لطفاً یکی از گزینه‌های بالا را انتخاب کنید.");
+    if (user.step === "waiting_for_expert") {
+        if (!["علی رضایی", "علی فیروز"].includes(text)) {
+            return bot.sendMessage(chatId, "لطفاً یکی از گزینه‌های کارشناس را از دکمه‌ها انتخاب کنید.");
         }
-
-        user.expert = expert;
+        user.expert = text;
         user.step = "done";
         writeDB(db);
 
-        // ارسال به گرویتی فرم
         try {
             const response = await axios.post(
                 "https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions",
                 {
-                    "5": user.customer, // فیلد شماره مشتری
-                    "6": user.expert    // فیلد نام کارشناس
+                    "5": user.customer,  // فیلد شماره مشتری در گرویتی فرم
+                    "6": user.expert,    // فیلد نام کارشناس در گرویتی فرم
                 },
                 {
                     auth: {
                         username: process.env.WP_USER,
-                        password: process.env.WP_PASS
-                    }
+                        password: process.env.WP_PASS,
+                    },
                 }
             );
-
             await bot.sendMessage(chatId, "✅ اطلاعات با موفقیت ارسال شد.");
-        } catch (err) {
-            console.error("خطا در ارسال:", err.response?.data || err.message);
+        } catch (error) {
+            console.error("خطا در ارسال:", error.response?.data || error.message);
             await bot.sendMessage(chatId, "❌ خطا در ارسال اطلاعات.");
         }
-    } else {
-        bot.sendMessage(chatId, "برای ارسال اطلاعات جدید، /start را بزنید.");
+    } else if (user.step === "done") {
+        bot.sendMessage(chatId, "برای ثبت اطلاعات جدید، لطفاً /start را ارسال کنید.");
     }
 });
 
-// راه‌اندازی وبهوک
+// راه‌اندازی وبهوک برای گرفتن آپدیت‌ها از تلگرام
 app.post("/webhook", (req, res) => {
     bot.processUpdate(req.body);
     res.sendStatus(200);
 });
 
-const PORT = process.env.PORT || 3000;
+// شروع سرور
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Bot server is running on port ${PORT}`);
 });
