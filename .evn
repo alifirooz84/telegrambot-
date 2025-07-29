@@ -1,4 +1,3 @@
 BOT_TOKEN=7956714963:AAFoyuZl6ETUNHtnnYTiMifG5U2AYTDA6do
-WP_USER=ck_2d57396985a2b279878adb960fed2735518474f9
-WP_PASS=cs_9c732b458b54f67325b61e826060bbda508a13b4
-
+SITE_URL=https://pestehiran.shop/receive-data.php
+WEBHOOK_URL=https://telegrambot-p9dz.onrender.com/webhook
