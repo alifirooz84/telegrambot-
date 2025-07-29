@@ -1,15 +1,16 @@
 {
   "name": "telegrambot",
   "version": "1.0.0",
-  "type": "module",
+  "description": "Telegram bot connected to Gravity Forms",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.8",
-    "dotenv": "^16.3.1",
-    "express": "^4.19.2",
-    "telegraf": "^4.17.0"
+    "telegraf": "^4.16.0",
+    "express": "^4.18.2",
+    "dotenv": "^16.0.3",
+    "axios": "^1.4.0"
   }
 }
