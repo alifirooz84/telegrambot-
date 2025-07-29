@@ -14,19 +14,17 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const sessions = {};
 
-// کارشناسان جدید
+// کارشناسان بدون نصرت آبادی
 const experts = [
-  'جعفری',
-  'مرادی',
-  'علیشاهی',
-  'حبیبی',
-  'شکری',
-  'محمدی',
-  'سعید نصرت آبادی'
+  'سرکار خانم جعفری',
+  'آقای مرادی',
+  'آقای علیشاهی',
+  'سرکار خانم حبیبی',
+  'سرکار خانم شکری',
+  'سرکار خانم محمدی'
 ];
 const cancelOption = 'انصراف از ارسال';
 
-// Webhook
 app.use(bot.webhookCallback('/webhook'));
 
 async function setWebhook() {
