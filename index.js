@@ -1,151 +1,157 @@
-require('dotenv').config();
-const { Telegraf, Markup } = require('telegraf');
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
+import { Telegraf, Markup } from "telegraf";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
+import basicAuth from "basic-auth";
+import fs from "fs";
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
+dotenv.config();
+
+const bot = new Telegraf(process.env.BOT_TOKEN);
 const PORT = process.env.PORT || 10000;
-const DOMAIN = process.env.DOMAIN || 'https://yourdomain.com'; // آدرس دامنه رندر یا دامنه شما
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
-if (!BOT_TOKEN) {
-  console.error('Error: BOT_TOKEN is not set in .env');
-  process.exit(1);
+const GRAVITY_FORM_ID = 1;
+const FIELD_ID_SALES_EXPERT = 6;
+const FIELD_ID_PHONE_NUMBER = 7;
+
+const gravityApiUrl = `https://pestehiran.shop/wp-json/gf/v2/forms/${GRAVITY_FORM_ID}/submissions`;
+
+// ذخیره و خواندن کارشناس‌ها از فایل ساده JSON
+const dataFile = './salesExperts.json';
+let salesExperts = {};
+if (fs.existsSync(dataFile)) {
+  salesExperts = JSON.parse(fs.readFileSync(dataFile));
 }
 
-const bot = new Telegraf(BOT_TOKEN);
-
-const gravityFormAPI = 'https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions';
-const gravityUser = process.env.WP_USER;
-const gravityPass = process.env.WP_PASS;
-
-if (!gravityUser || !gravityPass) {
-  console.error('Error: WP_USER or WP_PASS not set in .env');
-  process.exit(1);
+// ذخیره تغییرات به فایل
+function saveSalesExperts() {
+  fs.writeFileSync(dataFile, JSON.stringify(salesExperts, null, 2));
 }
 
-// مسیر ذخیره اطلاعات کارشناس
-const expertsFile = path.join(__dirname, 'experts.json');
+// لیست کارشناسان برای انتخاب
+const salesExpertsList = [
+  { name: "علی رضایی" },
+  { name: "علی فیروز" },
+];
 
-let experts = {};
-// بارگذاری اطلاعات قبلی کارشناسان (اگر فایل موجود بود)
-try {
-  if (fs.existsSync(expertsFile)) {
-    const data = fs.readFileSync(expertsFile, 'utf-8');
-    experts = JSON.parse(data);
+// ارسال داده به گرویتی فرم با Basic Auth
+async function sendToGravityForm(salesExpert, phoneNumber) {
+  const body = {
+    input_values: {
+      [FIELD_ID_SALES_EXPERT]: salesExpert,
+      [FIELD_ID_PHONE_NUMBER]: phoneNumber,
+    }
+  };
+
+  const auth = Buffer.from(`${process.env.WP_USER}:${process.env.WP_PASS}`).toString('base64');
+
+  const response = await fetch(gravityApiUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Gravity Form error: ${response.status} - ${text}`);
   }
-} catch (e) {
-  console.warn('Could not read experts file, starting fresh');
+  return await response.json();
 }
-
-// دیکشنری کارشناسان با شماره تماس
-const salesExperts = {
-  'علی رضایی': '09170324187',
-  'علی فیروز': '09135197039',
-};
-
-function saveExperts() {
-  fs.writeFileSync(expertsFile, JSON.stringify(experts, null, 2));
-}
-
-// مراحل چت:
 
 bot.start((ctx) => {
-  ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
-  // پاک کردن مرحله قبلی اگر بود
-  ctx.session = {};
-  ctx.session.step = 'waiting_for_customer_number';
+  ctx.reply("سلام! لطفا شماره مشتری رو وارد کن:");
+  salesExperts[ctx.chat.id] = salesExperts[ctx.chat.id] || {};
+  salesExperts[ctx.chat.id].step = 'awaitingPhone';
+  saveSalesExperts();
 });
 
+// مدیریت ورودی پیام‌ها
 bot.on('text', async (ctx) => {
   const chatId = ctx.chat.id;
   const text = ctx.message.text.trim();
 
-  // وضعیت کارشناس ذخیره شده؟
-  if (!experts[chatId]) {
-    experts[chatId] = { step: null, name: null, phone: null };
-  }
-  let user = experts[chatId];
+  salesExperts[chatId] = salesExperts[chatId] || {};
 
-  // مرحله شماره مشتری
-  if (user.step === null || user.step === 'waiting_for_customer_number') {
-    user.customerNumber = text;
-    user.step = 'waiting_for_sales_expert';
-    saveExperts();
+  try {
+    if (!salesExperts[chatId].phoneNumber && salesExperts[chatId].step === 'awaitingPhone') {
+      // دریافت شماره مشتری
+      salesExperts[chatId].phoneNumber = text;
 
-    // نمایش کیبورد گزینه کارشناس
-    return ctx.reply(
-      'لطفاً نام کارشناس فروش را انتخاب کنید:',
-      Markup.keyboard([['علی رضایی', 'علی فیروز']])
-        .oneTime()
-        .resize()
-    );
-  }
-
-  // مرحله انتخاب کارشناس
-  if (user.step === 'waiting_for_sales_expert') {
-    if (!salesExperts[text]) {
-      return ctx.reply(
-        'لطفاً فقط یکی از گزینه‌های زیر را انتخاب کنید:',
-        Markup.keyboard([['علی رضایی', 'علی فیروز']])
-          .oneTime()
-          .resize()
-      );
+      // اگر قبلا کارشناس ذخیره شده، مستقیم به ارسال میره
+      if (salesExperts[chatId].salesExpert) {
+        await sendToGravityForm(salesExperts[chatId].salesExpert, text);
+        await ctx.reply(`اطلاعات با موفقیت ارسال شد.\nکارشناس: ${salesExperts[chatId].salesExpert}\nشماره مشتری: ${text}`);
+        salesExperts[chatId].step = null;
+        saveSalesExperts();
+      } else {
+        // نمایش گزینه‌های انتخاب کارشناس
+        await ctx.reply(
+          "لطفا کارشناس فروش را انتخاب کن:",
+          Markup.inlineKeyboard(
+            salesExpertsList.map(e =>
+              Markup.button.callback(e.name, `selectExpert_${e.name}`)
+            )
+          )
+        );
+        salesExperts[chatId].step = 'awaitingExpert';
+        saveSalesExperts();
+      }
+      return;
     }
 
-    user.salesExpert = text;
-    user.salesPhone = salesExperts[text];
-    user.step = 'done';
-    saveExperts();
-
-    // ارسال داده به گرویتی فرم
-    try {
-      const payload = {
-        input_values: {
-          6: user.salesExpert,    // id فیلد نام کارشناس
-          7: user.customerNumber, // id فیلد شماره مشتری (یا شماره تلفن؟)
-          8: user.salesPhone       // اگر فیلد شماره تلفن 8 باشد، این را اضافه کنید
-        }
-      };
-
-      // چون در فرم فقط دو فیلد داریم (6 و 7)، اگر فیلد تلفن 8 دارید جدا ارسال کنید یا حذف کنید
-      // فرض می‌کنیم فقط 6 و 7 هستند:
-      const payloadCorrected = {
-        input_values: {
-          6: user.salesExpert,
-          7: user.customerNumber,
-        }
-      };
-
-      await axios.post(gravityFormAPI, payloadCorrected, {
-        auth: { username: gravityUser, password: gravityPass },
-      });
-
-      ctx.reply(
-        `اطلاعات ثبت شد:\nشماره مشتری: ${user.customerNumber}\nکارشناس: ${user.salesExpert}`
-      );
-    } catch (err) {
-      console.error(err.response?.data || err.message);
-      ctx.reply('❌ خطا در ارسال اطلاعات به گرویتی فرم.');
+    if (salesExperts[chatId].step === 'awaitingExpert') {
+      await ctx.reply("لطفا از دکمه‌های زیر کارشناس را انتخاب کن.");
+      return;
     }
-    return;
-  }
 
-  // اگر همه مراحل تمام شد، پیام پیش‌فرض
-  if (user.step === 'done') {
-    ctx.reply('اگر اطلاعات جدیدی دارید، لطفاً /start را ارسال کنید.');
+    // اگر مرحله تعیین نشده یا داده موجود است
+    await ctx.reply("برای شروع دستور /start را بزنید.");
+  } catch (e) {
+    await ctx.reply("خطایی رخ داد: " + e.message);
   }
 });
 
-// وبهوک ست و راه‌اندازی سرور express
+// مدیریت انتخاب کارشناس از طریق دکمه‌ها
+bot.action(/selectExpert_(.+)/, async (ctx) => {
+  const chatId = ctx.chat.id;
+  const selectedExpert = ctx.match[1];
 
-bot.telegram.setWebhook(`${DOMAIN}/bot${BOT_TOKEN}`);
+  if (!salesExperts[chatId]) {
+    salesExperts[chatId] = {};
+  }
 
-const express = require('express');
-const app = express();
+  salesExperts[chatId].salesExpert = selectedExpert;
 
-app.use(bot.webhookCallback(`/bot${BOT_TOKEN}`));
-
-app.listen(PORT, () => {
-  console.log(`Bot server is running on port ${PORT}`);
+  // ارسال داده به گرویتی فرم
+  try {
+    await sendToGravityForm(selectedExpert, salesExperts[chatId].phoneNumber);
+    await ctx.reply(`اطلاعات با موفقیت ارسال شد.\nکارشناس: ${selectedExpert}\nشماره مشتری: ${salesExperts[chatId].phoneNumber}`);
+    salesExperts[chatId].step = null;
+    saveSalesExperts();
+  } catch (e) {
+    await ctx.reply("ارسال اطلاعات به گرویتی فرم با خطا مواجه شد: " + e.message);
+  }
+  // حذف پیام دکمه‌ها
+  try {
+    await ctx.deleteMessage();
+  } catch {}
 });
+
+// ست کردن وبهوک و استارت ربات
+(async () => {
+  try {
+    await bot.telegram.setWebhook(`${WEBHOOK_URL}/bot${process.env.BOT_TOKEN}`);
+    await bot.launch({ webhook: { domain: WEBHOOK_URL, port: PORT } });
+    console.log('Bot server is running...');
+  } catch (e) {
+    console.error('Error launching bot:', e);
+    process.exit(1);
+  }
+})();
+
+// برای ریست شدن وبهوک در هنگام خاموشی
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
