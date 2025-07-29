@@ -6,26 +6,31 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;  // پورت داینامیک برای Render
+const port = process.env.PORT || 3000;
 
-// میانه‌افزار برای خواندن json
 app.use(express.json());
 
-// راه‌اندازی ربات تلگرام
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// ذخیره موقت وضعیت کاربران در حافظه (برای هر chat_id)
 const sessions = {};
 
-// لیست کارشناسان
-const experts = ['علی رضایی', 'علی فیروز','سعید نصرت آبادی'];
+// کارشناسان جدید
+const experts = [
+  'جعفری',
+  'مرادی',
+  'علیشاهی',
+  'حبیبی',
+  'شکری',
+  'محمدی',
+  'سعید نصرت آبادی'
+];
+const cancelOption = 'انصراف از ارسال';
 
-// مسیر webhook برای دریافت پیام‌ها از تلگرام
+// Webhook
 app.use(bot.webhookCallback('/webhook'));
 
-// ست کردن webhook به صورت خودکار (می‌تونید بعداً دستی بزنید)
 async function setWebhook() {
-  const url = process.env.WEBHOOK_URL; // مثلا https://yourapp.onrender.com/webhook
+  const url = process.env.WEBHOOK_URL;
   if (!url) {
     console.log('WEBHOOK_URL در .env تنظیم نشده');
     return;
@@ -38,13 +43,11 @@ async function setWebhook() {
   }
 }
 
-// شروع مکالمه
 bot.start((ctx) => {
   ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
   sessions[ctx.chat.id] = { step: 'waiting_customer' };
 });
 
-// دریافت پیام‌های کاربر
 bot.on('text', async (ctx) => {
   const chatId = ctx.chat.id;
   const text = ctx.message.text.trim();
@@ -64,19 +67,24 @@ bot.on('text', async (ctx) => {
     session.step = 'waiting_expert';
 
     return ctx.reply('لطفاً کارشناس را انتخاب کنید:', Markup.keyboard(
-      experts.map(e => [e])
+      [...experts.map(e => [e]), [cancelOption]]
     ).oneTime().resize());
   }
 
   if (session.step === 'waiting_expert') {
+    if (text === cancelOption) {
+      sessions[chatId] = { step: 'waiting_customer' };
+      return ctx.reply('ارسال اطلاعات لغو شد. لطفاً شماره مشتری را دوباره وارد کنید:');
+    }
+
     if (!experts.includes(text)) {
       return ctx.reply('لطفاً یکی از گزینه‌های زیر را انتخاب کنید:', Markup.keyboard(
-        experts.map(e => [e])
+        [...experts.map(e => [e]), [cancelOption]]
       ).oneTime().resize());
     }
+
     session.expert = text;
 
-    // ارسال داده‌ها به سایت
     try {
       const response = await fetch(process.env.SITE_URL, {
         method: 'POST',
@@ -99,7 +107,6 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// شروع سرور و بات
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
   setWebhook();
