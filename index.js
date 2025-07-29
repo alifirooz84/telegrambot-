@@ -18,7 +18,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const sessions = {};
 
 // لیست کارشناسان
-const experts = ['علی رضایی', 'علی فیروز','سعید نصرت آبادی];
+const experts = ['علی رضایی', 'علی فیروز','سعید نصرت آبادی'];
 
 // مسیر webhook برای دریافت پیام‌ها از تلگرام
 app.use(bot.webhookCallback('/webhook'));
