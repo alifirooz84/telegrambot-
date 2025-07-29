@@ -1,6 +1,4 @@
 BOT_TOKEN=7956714963:AAFoyuZl6ETUNHtnnYTiMifG5U2AYTDA6do
-GRAVITY_API_URL=https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions
-WP_USER=apibot
-WP_PASS=vJGq 6lFf zvp8 zlb3 ayBX alKY
+WP_USER=ck_2d57396985a2b279878adb960fed2735518474f9
+WP_PASS=cs_9c732b458b54f67325b61e826060bbda508a13b4
 PORT=10000
-WEBHOOK_URL=https://telegrambot-p9dz.onrender.com
