@@ -1,88 +1,151 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const PORT = process.env.PORT || 10000;
+const DOMAIN = process.env.DOMAIN || 'https://yourdomain.com'; // آدرس دامنه رندر یا دامنه شما
 
-const gravityFormApiUrl = 'https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions';
+if (!BOT_TOKEN) {
+  console.error('Error: BOT_TOKEN is not set in .env');
+  process.exit(1);
+}
 
-// کارشناس‌ها برای انتخاب توسط کاربر:
-const experts = [
-  { id: 1, name: 'علی رضایی' },
-  { id: 2, name: 'علی فیروز' },
-];
+const bot = new Telegraf(BOT_TOKEN);
 
-// ذخیره موقت اطلاعات کاربران در حافظه (برای نمونه ساده):
-const userSessions = {};
+const gravityFormAPI = 'https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions';
+const gravityUser = process.env.WP_USER;
+const gravityPass = process.env.WP_PASS;
+
+if (!gravityUser || !gravityPass) {
+  console.error('Error: WP_USER or WP_PASS not set in .env');
+  process.exit(1);
+}
+
+// مسیر ذخیره اطلاعات کارشناس
+const expertsFile = path.join(__dirname, 'experts.json');
+
+let experts = {};
+// بارگذاری اطلاعات قبلی کارشناسان (اگر فایل موجود بود)
+try {
+  if (fs.existsSync(expertsFile)) {
+    const data = fs.readFileSync(expertsFile, 'utf-8');
+    experts = JSON.parse(data);
+  }
+} catch (e) {
+  console.warn('Could not read experts file, starting fresh');
+}
+
+// دیکشنری کارشناسان با شماره تماس
+const salesExperts = {
+  'علی رضایی': '09170324187',
+  'علی فیروز': '09135197039',
+};
+
+function saveExperts() {
+  fs.writeFileSync(expertsFile, JSON.stringify(experts, null, 2));
+}
+
+// مراحل چت:
 
 bot.start((ctx) => {
   ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
-  userSessions[ctx.chat.id] = {};
+  // پاک کردن مرحله قبلی اگر بود
+  ctx.session = {};
+  ctx.session.step = 'waiting_for_customer_number';
 });
 
-// گرفتن شماره مشتری
 bot.on('text', async (ctx) => {
   const chatId = ctx.chat.id;
   const text = ctx.message.text.trim();
 
-  // اگر هنوز شماره مشتری ثبت نشده:
-  if (!userSessions[chatId] || !userSessions[chatId].customerNumber) {
-    userSessions[chatId] = { customerNumber: text };
-    // نمایش گزینه‌های کارشناس
+  // وضعیت کارشناس ذخیره شده؟
+  if (!experts[chatId]) {
+    experts[chatId] = { step: null, name: null, phone: null };
+  }
+  let user = experts[chatId];
+
+  // مرحله شماره مشتری
+  if (user.step === null || user.step === 'waiting_for_customer_number') {
+    user.customerNumber = text;
+    user.step = 'waiting_for_sales_expert';
+    saveExperts();
+
+    // نمایش کیبورد گزینه کارشناس
     return ctx.reply(
-      'لطفاً کارشناس فروش را انتخاب کنید:',
-      Markup.keyboard(experts.map((e) => e.name)).oneTime().resize()
+      'لطفاً نام کارشناس فروش را انتخاب کنید:',
+      Markup.keyboard([['علی رضایی', 'علی فیروز']])
+        .oneTime()
+        .resize()
     );
   }
 
-  // اگر شماره مشتری ثبت شده ولی کارشناس هنوز انتخاب نشده
-  if (!userSessions[chatId].expert) {
-    const expert = experts.find((e) => e.name === text);
-    if (!expert) {
+  // مرحله انتخاب کارشناس
+  if (user.step === 'waiting_for_sales_expert') {
+    if (!salesExperts[text]) {
       return ctx.reply(
-        'کارشناس معتبر نیست، لطفاً از گزینه‌ها انتخاب کنید.'
+        'لطفاً فقط یکی از گزینه‌های زیر را انتخاب کنید:',
+        Markup.keyboard([['علی رضایی', 'علی فیروز']])
+          .oneTime()
+          .resize()
       );
     }
-    userSessions[chatId].expert = expert;
 
-    // ارسال داده‌ها به گرویتی فرم
+    user.salesExpert = text;
+    user.salesPhone = salesExperts[text];
+    user.step = 'done';
+    saveExperts();
+
+    // ارسال داده به گرویتی فرم
     try {
-      const data = {
+      const payload = {
         input_values: {
-          7: userSessions[chatId].customerNumber, // id=7 شماره تلفن
-          6: userSessions[chatId].expert.name,    // id=6 نام کارشناس
-        },
+          6: user.salesExpert,    // id فیلد نام کارشناس
+          7: user.customerNumber, // id فیلد شماره مشتری (یا شماره تلفن؟)
+          8: user.salesPhone       // اگر فیلد شماره تلفن 8 باشد، این را اضافه کنید
+        }
       };
 
-      const response = await axios.post(gravityFormApiUrl, data, {
-        auth: {
-          username: process.env.WP_USER,
-          password: process.env.WP_PASS,
-        },
+      // چون در فرم فقط دو فیلد داریم (6 و 7)، اگر فیلد تلفن 8 دارید جدا ارسال کنید یا حذف کنید
+      // فرض می‌کنیم فقط 6 و 7 هستند:
+      const payloadCorrected = {
+        input_values: {
+          6: user.salesExpert,
+          7: user.customerNumber,
+        }
+      };
+
+      await axios.post(gravityFormAPI, payloadCorrected, {
+        auth: { username: gravityUser, password: gravityPass },
       });
 
-      if (response.data && response.data.is_valid) {
-        ctx.reply('✅ اطلاعات با موفقیت ثبت شد.');
-      } else {
-        ctx.reply('❌ خطا در ثبت اطلاعات.');
-      }
-    } catch (error) {
-      console.error('خطا در ارسال به گرویتی فرم:', error.message || error);
-      ctx.reply('❌ خطا در ارسال اطلاعات.');
+      ctx.reply(
+        `اطلاعات ثبت شد:\nشماره مشتری: ${user.customerNumber}\nکارشناس: ${user.salesExpert}`
+      );
+    } catch (err) {
+      console.error(err.response?.data || err.message);
+      ctx.reply('❌ خطا در ارسال اطلاعات به گرویتی فرم.');
     }
-
-    // پاک کردن نشست کاربر بعد از ارسال
-    delete userSessions[chatId];
     return;
   }
 
-  // اگر پیام نامرتبط بود
-  ctx.reply('برای ثبت اطلاعات جدید، لطفاً /start را ارسال کنید.');
+  // اگر همه مراحل تمام شد، پیام پیش‌فرض
+  if (user.step === 'done') {
+    ctx.reply('اگر اطلاعات جدیدی دارید، لطفاً /start را ارسال کنید.');
+  }
 });
 
-bot.launch();
-console.log('Bot server is running...');
+// وبهوک ست و راه‌اندازی سرور express
 
-// فعال کردن graceful stop در صورت نیاز
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+bot.telegram.setWebhook(`${DOMAIN}/bot${BOT_TOKEN}`);
+
+const express = require('express');
+const app = express();
+
+app.use(bot.webhookCallback(`/bot${BOT_TOKEN}`));
+
+app.listen(PORT, () => {
+  console.log(`Bot server is running on port ${PORT}`);
+});
