@@ -1,105 +1,88 @@
 require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
 const { Telegraf, Markup } = require('telegraf');
-const fs = require('fs');
+const axios = require('axios');
 
-const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const PORT = process.env.PORT || 10000;
 
-const dbFile = './db.json';
-let db = fs.existsSync(dbFile) ? JSON.parse(fs.readFileSync(dbFile)) : {};
+const gravityFormApiUrl = 'https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions';
 
-function saveDB() {
-  fs.writeFileSync(dbFile, JSON.stringify(db, null, 2));
-}
+// کارشناس‌ها برای انتخاب توسط کاربر:
+const experts = [
+  { id: 1, name: 'علی رضایی' },
+  { id: 2, name: 'علی فیروز' },
+];
+
+// ذخیره موقت اطلاعات کاربران در حافظه (برای نمونه ساده):
+const userSessions = {};
 
 bot.start((ctx) => {
-  const chatId = String(ctx.chat.id);
-  db[chatId] = { step: "get_customer" };
-  saveDB();
-  ctx.reply("لطفاً شماره مشتری را وارد کنید:");
+  ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
+  userSessions[ctx.chat.id] = {};
 });
 
+// گرفتن شماره مشتری
 bot.on('text', async (ctx) => {
-  const chatId = String(ctx.chat.id);
+  const chatId = ctx.chat.id;
   const text = ctx.message.text.trim();
 
-  if (!db[chatId]) {
-    db[chatId] = { step: "get_customer" };
-    saveDB();
-    return ctx.reply("لطفاً شماره مشتری را وارد کنید:");
-  }
-
-  const user = db[chatId];
-
-  if (user.step === "get_customer") {
-    if (!/^\d{4,15}$/.test(text)) {
-      return ctx.reply("شماره مشتری نامعتبر است. لطفاً دوباره وارد کنید:");
-    }
-    user.customer = text;
-    user.step = "choose_expert";
-    saveDB();
-
+  // اگر هنوز شماره مشتری ثبت نشده:
+  if (!userSessions[chatId] || !userSessions[chatId].customerNumber) {
+    userSessions[chatId] = { customerNumber: text };
+    // نمایش گزینه‌های کارشناس
     return ctx.reply(
-      "کارشناس مورد نظر را انتخاب کنید:",
-      Markup.keyboard([["علی رضایی"], ["علی فیروز"]])
-        .oneTime()
-        .resize()
+      'لطفاً کارشناس فروش را انتخاب کنید:',
+      Markup.keyboard(experts.map((e) => e.name)).oneTime().resize()
     );
   }
 
-  if (user.step === "choose_expert") {
-    if (!["علی رضایی", "علی فیروز"].includes(text)) {
-      return ctx.reply("لطفاً یکی از گزینه‌های بالا را انتخاب کنید.");
-    }
-
-    user.expert = text;
-    user.step = "done";
-    saveDB();
-
-    // ارسال به گرویتی فرم
-    try {
-      const response = await axios.post(
-        "https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions",
-        {
-          6: user.expert,    // فیلد نام کارشناس
-          8: user.customer   // فیلد شماره مشتری
-        },
-        {
-          auth: {
-            username: process.env.WP_USER,
-            password: process.env.WP_PASS,
-          },
-        }
+  // اگر شماره مشتری ثبت شده ولی کارشناس هنوز انتخاب نشده
+  if (!userSessions[chatId].expert) {
+    const expert = experts.find((e) => e.name === text);
+    if (!expert) {
+      return ctx.reply(
+        'کارشناس معتبر نیست، لطفاً از گزینه‌ها انتخاب کنید.'
       );
+    }
+    userSessions[chatId].expert = expert;
 
-      if (response.status === 200 || response.status === 201) {
-        ctx.reply("✅ اطلاعات با موفقیت ارسال شد.");
+    // ارسال داده‌ها به گرویتی فرم
+    try {
+      const data = {
+        input_values: {
+          7: userSessions[chatId].customerNumber, // id=7 شماره تلفن
+          6: userSessions[chatId].expert.name,    // id=6 نام کارشناس
+        },
+      };
+
+      const response = await axios.post(gravityFormApiUrl, data, {
+        auth: {
+          username: process.env.WP_USER,
+          password: process.env.WP_PASS,
+        },
+      });
+
+      if (response.data && response.data.is_valid) {
+        ctx.reply('✅ اطلاعات با موفقیت ثبت شد.');
       } else {
-        ctx.reply("❌ خطا در ثبت اطلاعات. لطفاً دوباره تلاش کنید.");
+        ctx.reply('❌ خطا در ثبت اطلاعات.');
       }
-    } catch (err) {
-      console.error("خطا در ارسال:", err.response?.data || err.message);
-      ctx.reply("❌ خطا در ارسال اطلاعات. لطفاً بعداً دوباره امتحان کنید.");
+    } catch (error) {
+      console.error('خطا در ارسال به گرویتی فرم:', error.message || error);
+      ctx.reply('❌ خطا در ارسال اطلاعات.');
     }
 
-    // پاک کردن وضعیت کاربر بعد از ارسال
-    delete db[chatId];
-    saveDB();
-
+    // پاک کردن نشست کاربر بعد از ارسال
+    delete userSessions[chatId];
     return;
   }
 
-  if (user.step === "done") {
-    return ctx.reply("برای ثبت اطلاعات جدید، لطفاً /start را ارسال کنید.");
-  }
+  // اگر پیام نامرتبط بود
+  ctx.reply('برای ثبت اطلاعات جدید، لطفاً /start را ارسال کنید.');
 });
 
-app.use(bot.webhookCallback("/webhook"));
-bot.telegram.setWebhook(`https://telegrambot-p9dz.onrender.com/webhook`);
+bot.launch();
+console.log('Bot server is running...');
 
-app.listen(PORT, () => {
-  console.log(`Bot server is running on port ${PORT}`);
-});
+// فعال کردن graceful stop در صورت نیاز
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
