@@ -1,112 +1,157 @@
-import { Telegraf } from 'telegraf';
+import 'dotenv/config';
 import express from 'express';
+import { Telegraf } from 'telegraf';
 import axios from 'axios';
-import dotenv from 'dotenv';
-import fs from 'fs';
+import basicAuth from 'basic-auth';
 
-dotenv.config();
+const botToken = process.env.BOT_TOKEN;
+const gfApiUrl = process.env.GF_API_URL;  // مثلا: https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions
+const gfUser = process.env.GF_USER;
+const gfPass = process.env.GF_PASS;
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const PORT = process.env.PORT || 3000;
+
+if (!botToken || !gfApiUrl || !gfUser || !gfPass) {
+  console.error("Missing environment variables!");
+  process.exit(1);
+}
+
 const app = express();
-const PORT = process.env.PORT || 10000;
+app.use(express.json());
 
-const DATA_FILE = './experts.json';
+const bot = new Telegraf(botToken);
 
-let experts = {};
-if (fs.existsSync(DATA_FILE)) {
-  experts = JSON.parse(fs.readFileSync(DATA_FILE));
+// حافظه ساده برای نگهداری شماره کارشناس با chat_id (برای نمونه ساده، در حافظه نگهداری می‌شود)
+const salesExperts = {
+  // chat_id: { name: "علی رضایی", phone: "0912xxxxxxx" }
+};
+
+// Middleware ساده برای Basic Auth (در صورت نیاز API گرویتی فرم)
+function gfAuth(req, res, next) {
+  const user = basicAuth(req);
+  if (!user || user.name !== gfUser || user.pass !== gfPass) {
+    res.set('WWW-Authenticate', 'Basic realm="Gravity Forms API"');
+    return res.status(401).send('Authentication required.');
+  }
+  next();
 }
 
-// ذخیره دائمی اطلاعات کارشناسان
-function saveExperts() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(experts, null, 2));
-}
-
-bot.start((ctx) => {
-  ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
-  ctx.session = {};
+// روت برای ست کردن وبهوک تلگرام (فقط یکبار اجرا کن)
+app.get('/setWebhook', async (req, res) => {
+  const webhookUrl = `https://${req.headers.host}/telegraf/${bot.secretPathComponent()}`;
+  try {
+    await bot.telegram.setWebhook(webhookUrl);
+    res.send(`Webhook set to: ${webhookUrl}`);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("Failed to set webhook.");
+  }
 });
 
+// روت برای دریافت وبهوک از تلگرام
+app.use(bot.webhookCallback(`/telegraf/${bot.secretPathComponent()}`));
+
+// فرمان /start
+bot.start((ctx) => ctx.reply("سلام! لطفا شماره مشتری را ارسال کنید."));
+
+// ذخیره شماره مشتری و درخواست انتخاب کارشناس
 bot.on('text', async (ctx) => {
   const chatId = ctx.chat.id;
   const text = ctx.message.text.trim();
 
-  // اگر هنوز کارشناس ذخیره نشده
-  if (!experts[chatId]) {
-    // اگر کارشناس وارد انتخاب نشده
-    if (!ctx.session || !ctx.session.phone) {
-      if (/^\d{7,15}$/.test(text)) {
-        ctx.session = { phone: text };
-        ctx.reply('لطفاً یکی از کارشناسان را انتخاب کنید:', {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: 'علی فیروز', callback_data: 'Ali Firooz' }],
-              [{ text: 'علی رضایی', callback_data: 'Ali Rezaei' }],
-            ]
-          }
-        });
-      } else {
-        ctx.reply('لطفاً فقط شماره مشتری را وارد کنید (اعداد بدون فاصله)');
-      }
-    }
-  } else {
-    // اگر کارشناس قبلاً شناخته شده است
-    const expertName = experts[chatId].name;
-    const phone = text;
+  // اگر کارشناس برای این chat_id ذخیره شده، فرض می‌کنیم شماره مشتری را گرفته ایم و ارسال می کنیم به گرویتی فرم
+  if (salesExperts[chatId]) {
+    // ارسال به گرویتی فرم
+    const salesExpertName = salesExperts[chatId].name;
+    const salesExpertPhone = salesExperts[chatId].phone;
 
     try {
-      await submitToGravityForm(expertName, phone);
-      ctx.reply(`اطلاعات با موفقیت ارسال شد ✅\nکارشناس: ${expertName}\nشماره مشتری: ${phone}`);
-    } catch (err) {
-      ctx.reply('❌ خطا در ارسال اطلاعات به سایت. لطفاً دوباره تلاش کنید.');
+      await axios.post(
+        gfApiUrl,
+        {
+          input_values: {
+            6: salesExpertName,   // نام کارشناس (ID=6)
+            7: text              // شماره مشتری (ID=7)
+          }
+        },
+        {
+          auth: {
+            username: gfUser,
+            password: gfPass
+          }
+        }
+      );
+      await ctx.reply(`شماره مشتری ${text} با موفقیت به فرم ارسال شد.`);
+    } catch (error) {
+      console.error("Error sending to Gravity Forms:", error);
+      await ctx.reply("خطا در ارسال اطلاعات به فرم. لطفا بعدا تلاش کنید.");
     }
+  } else {
+    // اگر کارشناس هنوز ثبت نشده، از کاربر بخواه نام و شماره خود را ارسال کند یا انتخاب کند
+    // برای نمونه، در اینجا فرض می‌کنیم فقط دو کارشناس وجود دارد و گزینه می‌دهیم
+    await ctx.reply(
+      "لطفا کارشناس خود را انتخاب کنید:",
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "علی رضایی", callback_data: "sales_alirez" }],
+            [{ text: "علی فیروز", callback_data: "sales_alifir" }]
+          ]
+        }
+      }
+    );
+
+    // ذخیره شماره مشتری موقت (اگر میخوای ذخیره کنی، می‌تونی اینجا بگذاری)
+    salesExperts[chatId] = { waitingForSalesExpert: true, phone: null, name: null, customerPhone: text };
   }
 });
 
-// وقتی کارشناس انتخاب شد
+// پاسخ به انتخاب کارشناس
 bot.on('callback_query', async (ctx) => {
   const chatId = ctx.chat.id;
-  const expertName = ctx.update.callback_query.data;
-  const phone = ctx.session?.phone;
+  const data = ctx.callbackQuery.data;
 
-  if (!phone) {
-    ctx.reply('لطفاً ابتدا شماره مشتری را وارد کنید.');
-    return;
+  if (!salesExperts[chatId] || !salesExperts[chatId].waitingForSalesExpert) {
+    return ctx.answerCbQuery("ابتدا شماره مشتری را ارسال کنید.");
   }
 
-  experts[chatId] = { name: expertName };
-  saveExperts();
+  let salesExpertName = "";
+  if (data === "sales_alirez") salesExpertName = "علی رضایی";
+  else if (data === "sales_alifir") salesExpertName = "علی فیروز";
+  else return ctx.answerCbQuery("گزینه نامعتبر است.");
+
+  salesExperts[chatId].name = salesExpertName;
+  salesExperts[chatId].phone = "شماره تماس کارشناس"; // در صورت تمایل می‌توان این شماره را هم پرسید یا ثابت قرار داد
+  salesExperts[chatId].waitingForSalesExpert = false;
+
+  // حالا شماره مشتری را داریم (از متن قبلی)
+  const customerPhone = salesExperts[chatId].customerPhone;
 
   try {
-    await submitToGravityForm(expertName, phone);
-    await ctx.answerCbQuery();
-    ctx.reply(`اطلاعات ثبت شد ✅\nکارشناس: ${expertName}\nشماره مشتری: ${phone}`);
-  } catch (err) {
-    ctx.reply('❌ خطا در ارسال اطلاعات به سایت. لطفاً دوباره تلاش کنید.');
+    await axios.post(
+      gfApiUrl,
+      {
+        input_values: {
+          6: salesExpertName,
+          7: customerPhone
+        }
+      },
+      {
+        auth: {
+          username: gfUser,
+          password: gfPass
+        }
+      }
+    );
+    await ctx.reply(`شماره مشتری ${customerPhone} با موفقیت ثبت شد.`);
+  } catch (error) {
+    console.error("Error sending to Gravity Forms:", error);
+    await ctx.reply("خطا در ارسال اطلاعات به فرم. لطفا بعدا تلاش کنید.");
   }
+
+  await ctx.answerCbQuery();
 });
 
-// ارسال اطلاعات به گرویتی فرم
-async function submitToGravityForm(expertName, phone) {
-  const url = 'https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions';
-  const auth = Buffer.from(`${process.env.WP_USER}:${process.env.WP_PASS}`).toString('base64');
-
-  const body = {
-    input_values: {
-      '6': expertName,
-      '7': phone
-    }
-  };
-
-  return axios.post(url, body, {
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Content-Type': 'application/json'
-    }
-  });
-}
-
-// پشتیبانی از وبهوک
-app.use(bot.webhookCallback('/'));
-
-bot.telegram.setWebhoo
+app.listen(PORT, () => {
+  console.log(`Bot server is running on port ${PORT}`);
+});
