@@ -3,4 +3,4 @@ GRAVITY_API_URL=https://pestehiran.shop/wp-json/gf/v2/forms/1/submissions
 WP_USER=apibot
 WP_PASS=vJGq 6lFf zvp8 zlb3 ayBX alKY
 PORT=10000
-WEBHOOK_URL=https://telegrambot-p9dz.onrender.com/webhook
+WEBHOOK_URL=https://telegrambot-p9dz.onrender.com
