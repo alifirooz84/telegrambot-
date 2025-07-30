@@ -1,111 +1,120 @@
-import express from 'express';
-import { Telegraf, Markup } from 'telegraf';
-import fetch from 'node-fetch';
-import dotenv from 'dotenv';
+require("dotenv").config();
+const TelegramBot = require("node-telegram-bot-api");
+const axios = require("axios");
+const fs = require("fs");
+const express = require("express");
 
-dotenv.config();
-
+const bot = new TelegramBot(process.env.BOT_TOKEN);
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-app.use(express.json());
+const experts = require("./experts");
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const DATA_FILE = "./data.json";
+let userStates = {};
+let expertCache = {};
 
-const sessions = {};
-
-// کارشناسان بدون نصرت آبادی
-const experts = [
-  'سرکار خانم جعفری',
-  'آقای مرادی',
-  'آقای علیشاهی',
-  'سرکار خانم حبیبی',
-  'سرکار خانم شکری',
-  'سرکار خانم محمدی'
-];
-const cancelOption = 'انصراف از ارسال';
-
-app.use(bot.webhookCallback('/webhook'));
-
-async function setWebhook() {
-  const url = process.env.WEBHOOK_URL;
-  if (!url) {
-    console.log('WEBHOOK_URL در .env تنظیم نشده');
-    return;
-  }
-  try {
-    await bot.telegram.setWebhook(url);
-    console.log('Webhook ست شد:', url);
-  } catch (e) {
-    console.error('خطا در ست کردن webhook:', e);
-  }
+// بارگذاری اطلاعات کارشناسان از فایل
+if (fs.existsSync(DATA_FILE)) {
+  expertCache = JSON.parse(fs.readFileSync(DATA_FILE));
 }
 
-bot.start((ctx) => {
-  ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
-  sessions[ctx.chat.id] = { step: 'waiting_customer' };
+// ذخیره‌سازی دائمی
+function saveData() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(expertCache, null, 2));
+}
+
+// دریافت شماره مشتری
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+
+  // اگر در مرحله انتخاب کارشناس هست
+  if (userStates[chatId] && userStates[chatId].stage === "awaiting_expert") return;
+
+  // اگر کاربر قبلاً ثبت شده است
+  if (expertCache[chatId]) {
+    const expert = expertCache[chatId];
+    sendToGravityForm(text, expert.label, expert.phone, chatId);
+    return bot.sendMessage(chatId, "✅ اطلاعات شما ثبت شد.");
+  }
+
+  // ذخیره شماره مشتری و نمایش گزینه‌های کارشناس
+  userStates[chatId] = {
+    stage: "awaiting_expert",
+    customerNumber: text
+  };
+
+  const expertOptions = Object.keys(experts).map((key) => {
+    return [{ text: experts[key].label, callback_data: key }];
+  });
+
+  expertOptions.push([{ text: "❌ انصراف از ارسال", callback_data: "cancel_submission" }]);
+
+  bot.sendMessage(chatId, "لطفاً یکی از کارشناسان را انتخاب کنید:", {
+    reply_markup: {
+      inline_keyboard: expertOptions
+    }
+  });
 });
 
-bot.on('text', async (ctx) => {
-  const chatId = ctx.chat.id;
-  const text = ctx.message.text.trim();
+// انتخاب کارشناس
+bot.on("callback_query", (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
 
-  if (!sessions[chatId]) {
-    sessions[chatId] = { step: 'waiting_customer' };
-    return ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
+  if (data === "cancel_submission") {
+    userStates[chatId] = null;
+    return bot.sendMessage(chatId, "❌ ارسال اطلاعات لغو شد. برای شروع دوباره، شماره مشتری را وارد کنید.");
   }
 
-  const session = sessions[chatId];
+  const expertInfo = experts[data];
+  if (!expertInfo) return bot.sendMessage(chatId, "❌ کارشناس نامعتبر است.");
 
-  if (session.step === 'waiting_customer') {
-    if (!text) {
-      return ctx.reply('شماره مشتری نمی‌تواند خالی باشد. لطفاً وارد کنید:');
-    }
-    session.customer = text;
-    session.step = 'waiting_expert';
+  expertCache[chatId] = {
+    label: expertInfo.label,
+    phone: expertInfo.phone
+  };
+  saveData();
 
-    return ctx.reply('لطفاً کارشناس را انتخاب کنید:', Markup.keyboard(
-      [...experts.map(e => [e]), [cancelOption]]
-    ).oneTime().resize());
-  }
+  const customerNumber = userStates[chatId]?.customerNumber || "نامشخص";
+  userStates[chatId] = null;
 
-  if (session.step === 'waiting_expert') {
-    if (text === cancelOption) {
-      sessions[chatId] = { step: 'waiting_customer' };
-      return ctx.reply('ارسال اطلاعات لغو شد. لطفاً شماره مشتری را دوباره وارد کنید:');
-    }
-
-    if (!experts.includes(text)) {
-      return ctx.reply('لطفاً یکی از گزینه‌های زیر را انتخاب کنید:', Markup.keyboard(
-        [...experts.map(e => [e]), [cancelOption]]
-      ).oneTime().resize());
-    }
-
-    session.expert = text;
-
-    try {
-      const response = await fetch(process.env.SITE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          customer: session.customer,
-          expert: session.expert
-        })
-      });
-
-      if (!response.ok) throw new Error('خطا در ارسال اطلاعات به سایت');
-
-      await ctx.reply('اطلاعات با موفقیت ارسال شد ✅');
-    } catch (error) {
-      console.error(error);
-      await ctx.reply('❌ خطا در ارسال اطلاعات به سایت.');
-    }
-
-    delete sessions[chatId];
-  }
+  sendToGravityForm(customerNumber, expertInfo.label, expertInfo.phone, chatId);
+  bot.sendMessage(chatId, "✅ اطلاعات شما ثبت شد.");
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  setWebhook();
+// ارسال به Gravity Form
+function sendToGravityForm(customerNumber, expertName, expertPhone, chatId) {
+  const auth = Buffer.from(`${process.env.WP_USER}:${process.env.WP_PASS}`).toString("base64");
+
+  const data = {
+    "input_5": customerNumber,
+    "input_6": `${expertName} (${expertPhone})`
+  };
+
+  axios
+    .post(`${process.env.API_BASE}/forms/1/submissions`, data, {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/json"
+      }
+    })
+    .then(() => {
+      console.log(`✅ اطلاعات مشتری ${customerNumber} از ${expertName} ارسال شد.`);
+    })
+    .catch((error) => {
+      console.error("❌ خطا در ارسال اطلاعات:", error.response?.data || error.message);
+      bot.sendMessage(chatId, "❌ خطا در ثبت اطلاعات، لطفاً دوباره تلاش کنید.");
+    });
+}
+
+// راه‌اندازی سرور برای webhook
+app.use(express.json());
+app.post(`/webhook/${process.env.BOT_TOKEN}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+app.listen(PORT, () => {
+  console.log(`🤖 Bot is running on port ${PORT}`);
 });
