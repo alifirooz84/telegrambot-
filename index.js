@@ -2,6 +2,7 @@ import express from 'express';
 import { Telegraf, Markup } from 'telegraf';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
+import fs from 'fs';
 
 dotenv.config();
 
@@ -14,15 +15,40 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const sessions = {};
 
-// کارشناسان بدون نصرت آبادی
 const experts = [
   'سرکار خانم جعفری',
   'سرکار خانم مرادی',
   'آقای علیشاهی',
   'سرکار خانم حبیبی',
-  'آقای محمدی'
+  'آقای محمدی',
+  'سرکار خانم شکری'
 ];
+
+const expertsPhones = {
+  'سرکار خانم جعفری': '09373424385',
+  'سرکار خانم مرادی': '09016363835',
+  'آقای علیشاهی': '09016363153',
+  'سرکار خانم حبیبی': '09221810925',
+  'آقای محمدی': '09109493183',
+  'سرکار خانم شکری': '09354443081'
+};
+
 const cancelOption = 'انصراف از ارسال';
+
+const expertsDataFile = './data/experts.json';
+
+function loadExpertsData() {
+  try {
+    const data = fs.readFileSync(expertsDataFile, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return {};
+  }
+}
+
+function saveExpertsData(data) {
+  fs.writeFileSync(expertsDataFile, JSON.stringify(data, null, 2));
+}
 
 app.use(bot.webhookCallback('/webhook'));
 
@@ -41,8 +67,16 @@ async function setWebhook() {
 }
 
 bot.start((ctx) => {
-  ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
-  sessions[ctx.chat.id] = { step: 'waiting_customer' };
+  const chatId = ctx.chat.id;
+  let expertsData = loadExpertsData();
+
+  if (expertsData[chatId]) {
+    ctx.reply(`سلام دوباره! شما کارشناس ${expertsData[chatId].name} با شماره ${expertsData[chatId].phone} هستید.\nلطفاً شماره مشتری را وارد کنید:`);
+    sessions[chatId] = { step: 'waiting_customer' };
+  } else {
+    ctx.reply('سلام! لطفاً شماره مشتری را وارد کنید:');
+    sessions[chatId] = { step: 'waiting_customer' };
+  }
 });
 
 bot.on('text', async (ctx) => {
@@ -81,6 +115,14 @@ bot.on('text', async (ctx) => {
     }
 
     session.expert = text;
+
+    // ذخیره شماره کارشناس در فایل
+    let expertsData = loadExpertsData();
+    expertsData[chatId] = {
+      name: text,
+      phone: expertsPhones[text]
+    };
+    saveExpertsData(expertsData);
 
     try {
       const response = await fetch(process.env.SITE_URL, {
