@@ -7,14 +7,11 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
-
 app.use(express.json());
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const sessions = {};
-
-// کارشناسان بدون نصرت آبادی
 const experts = [
   'سرکار خانم جعفری',
   'سرکار خانم مرادی',
@@ -59,7 +56,7 @@ bot.on('text', async (ctx) => {
 
   if (session.step === 'waiting_customer') {
     if (!text) {
-      return ctx.reply('شماره مشتری نمی‌تواند خالی باشد. لطفاً وارد کنید:');
+      return ctx.reply('شماره مشتری نمی‌تواند خالی باشد. لطفاً دوباره وارد کنید:');
     }
     session.customer = text;
     session.step = 'waiting_expert';
