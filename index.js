@@ -15,6 +15,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const sessions = {};
 
+// لیست کارشناسان به همراه شماره
 const experts = [
   'سرکار خانم جعفری',
   'سرکار خانم مرادی',
@@ -35,6 +36,7 @@ const expertsPhones = {
 
 const cancelOption = 'انصراف از ارسال';
 
+// مسیر ذخیره اطلاعات کارشناسان که بات قبلاً شناسایی کرده
 const expertsDataFile = './data/experts.json';
 
 function loadExpertsData() {
@@ -110,43 +112,4 @@ bot.on('text', async (ctx) => {
 
     if (!experts.includes(text)) {
       return ctx.reply('لطفاً یکی از گزینه‌های زیر را انتخاب کنید:', Markup.keyboard(
-        [...experts.map(e => [e]), [cancelOption]]
-      ).oneTime().resize());
-    }
-
-    session.expert = text;
-
-    // ذخیره شماره کارشناس در فایل
-    let expertsData = loadExpertsData();
-    expertsData[chatId] = {
-      name: text,
-      phone: expertsPhones[text]
-    };
-    saveExpertsData(expertsData);
-
-    try {
-      const response = await fetch(process.env.SITE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          customer: session.customer,
-          expert: session.expert
-        })
-      });
-
-      if (!response.ok) throw new Error('خطا در ارسال اطلاعات به سایت');
-
-      await ctx.reply('اطلاعات با موفقیت ارسال شد ✅');
-    } catch (error) {
-      console.error(error);
-      await ctx.reply('❌ خطا در ارسال اطلاعات به سایت.');
-    }
-
-    delete sessions[chatId];
-  }
-});
-
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  setWebhook();
-});
+        [...expe]()
