@@ -12,14 +12,17 @@ app.use(express.json());
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const sessions = {};
+
 const experts = [
   'سرکار خانم جعفری',
   'سرکار خانم مرادی',
   'آقای علیشاهی',
   'سرکار خانم حبیبی',
   'آقای محمدی',
-  'سرکار خانم شکری'
+  'سرکار خانم شکری',
+  'تماس خارج تایم اداری'  // گزینه جدید اضافه شده
 ];
+
 const cancelOption = 'انصراف از ارسال';
 
 app.use(bot.webhookCallback('/webhook'));
